@@ -1,0 +1,94 @@
+# Fail2Ban action add-on for sending xarf Login-Attack messages including an OTRS-Ticketnumber
+#
+# IMPORTANT:
+#
+# XARF-Action must be setup via xarf-login-attack.conf !!!
+# This file is only an addition 
+#
+# Author: Florian Ruhnke (OiledAmoeba)
+# See credits in xarf-login-attack.conf for their work
+
+[Definition]
+# a little different, because I fill the variable $OTRSLOG with <ipmatches>
+# which is only available in the actionban-section. All other lines have been
+# copied from the original action.
+actionban = oifs=${IFS};
+            RESOLVER_ADDR="%(addr_resolver)s"
+            if [ "<debug>" -gt 0 ]; then echo "try to resolve $RESOLVER_ADDR"; fi
+            ADDRESSES=$(dig +short -t txt -q $RESOLVER_ADDR | tr -d '"')
+            IFS=,; ADDRESSES=$(echo $ADDRESSES)
+            IFS=${oifs}
+            IP=<ip>
+            OTRSLOG=<ipmatches>
+            FROM=<sender>
+            SERVICE=<service>
+            FAILURES=<failures>
+            REPORTID=<time>@<fq-hostname>
+            TLP=<tlp>
+            PORT=<port>
+            DATE=`LC_ALL=C date --date=@<time> +"%%a, %%d %%h %%Y %%T %%z"`
+            if [ ! -z "$ADDRESSES" ]; then
+                oifs=${IFS}; IFS=,; ADDRESSES=$(echo $ADDRESSES)
+                IFS=${oifs}
+                (printf -- %%b "<header>\n<message>\n<report>\n\n";
+                 date '+Note: Local timezone is %%z (%%Z)';
+                 printf -- %%b "\n<ipmatches>\n\n<footer>") | <mailcmd> <mailargs> $ADDRESSES
+            fi
+
+# Insert [Ticket#%(_ticketno)s] to the subject
+header  = Subject: [Ticket#%(_ticketno)s] abuse report about $IP - $DATE\nAuto-Submitted: auto-generated\nX-XARF: PLAIN\nContent-Transfer-Encoding: 7bit\nContent-Type: multipart/mixed; charset=utf8;\n  boundary=%(_boundary)s;\n\n--%(_boundary)s\nMIME-Version: 1.0\nContent-Transfer-Encoding: 7bit\nContent-Type: text/plain; charset=utf-8;\n
+
+# Options for using OTRS
+OTRS_fqdn = https://example.com
+OTRS_sub = otrs
+OTRS_webservice = GenericTicketConnectorREST
+OTRS_user = Username
+OTRS_passwd = password
+OTRS_state = closed successful
+# Use priority ID, not the name!!
+OTRS_priority = 2
+OTRS_customeruser = <sender>
+# This sets the "Customer" in OTRS to the recipient email
+OTRS_customerID = $ADDRESSES
+# Title of the ticket
+OTRS_title = abuse report about $IP
+# Title of the article
+OTRS_subject = <fq-hostname> send this mail to $ADDRESSES
+# Define TicketType. Example: Incident, Unclassified, Problem, RfC, ServiceRequest
+OTRS_type = Unclassified
+# Define Queue. Standard: Raw
+OTRS_queue = Fail2Ban
+OTRS_content = text/plain
+OTRS_charset = utf8
+OTRS_body = This mail was send to $ADDRESSES to inform about an attack against <service>\n\n\n<message>
+# OTRS requires all attached files as Base-64-encoded strings
+OTRS_attachment = $(echo ${OTRSLOG} | base64 -w0)
+# Define the Filename of the attachment. Standard: logfile.log, Example: abuse_<ip>.log (for dynamic filenames)
+OTRS_filename = abuse_<ip>.log
+OTRS_ticket = $(curl -sSf "<OTRS_fqdn>/<OTRS_sub>/nph-genericinterface.pl/Webservice/<OTRS_webservice>/Ticket" \
+			-H "Content-Type: application/json" -d "\
+			{\
+				\"UserLogin\":\"<OTRS_user>\",\
+				\"Password\":\"<OTRS_passwd>\",\
+				\"Ticket\":{\
+					\"Title\":\"<OTRS_title>\",\
+					\"Type\":\"<OTRS_type>\",\
+					\"Queue\":\"<OTRS_queue>\",\
+					\"State\":\"<OTRS_state>\",\
+					\"PriorityID\":\"<OTRS_priority>\",\
+					\"CustomerUser\":\"<OTRS_customeruser>\",\
+					\"CustomerID\":\"<OTRS_customerID>\"\
+				},\
+				\"Article\":{\
+					\"Subject\":\"<OTRS_subject>\",\
+					\"CommunicationChannel\":\"Email\",\
+					\"Body\":\"<OTRS_body>\",\
+					\"ContentType\":\"<OTRS_content>; charset=<OTRS_charset>\"\
+				},\
+				\"Attachment\":{\
+					\"Filename\":\"<OTRS_filename\",\
+					\"ContentType\":\"text/plain\",\
+					\"Content\":\"<OTRS_attachment>\"\
+				}\
+			}" -X POST | grep -Po '"'"TicketNumber"'"\s*:\s*"\K([^"]*)')
+_ticketno = <OTRS_ticket>
